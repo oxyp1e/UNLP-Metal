@@ -11,6 +11,7 @@
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
+        fprintf(stderr, "%d", argc);
         if (argc < 2) {
             fprintf(stderr, "Usage: %s [--packed|--packed-col] <input_file.txt> [duration_s]\n", argv[0]);
             return 1;

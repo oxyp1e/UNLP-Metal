@@ -406,6 +406,118 @@
 }
 
 // ---------------------------------------------------------------------------
+// Raw path — no NSString anywhere; caller has already done \0-replace + offsets
+// ---------------------------------------------------------------------------
+
+- (NSUInteger)lemmatizeBatchPackedColumnRaw:(const char *)bytes
+                                    offsets:(const uint32_t *)offsets
+                                      count:(NSUInteger)count
+                                   kernelMs:(double *)outKernelMs
+                                     packMs:(double *)outPackMs
+                                    totalMs:(double *)outTotalMs {
+    if (count == 0) {
+        if (outKernelMs) *outKernelMs = 0;
+        if (outPackMs)   *outPackMs   = 0;
+        if (outTotalMs)  *outTotalMs  = 0;
+        return 0;
+    }
+
+    struct timespec wallStart, wallEnd;
+    clock_gettime(CLOCK_MONOTONIC, &wallStart);
+
+    // --- PACK: create MTLBuffers (noCopy for bytes if page-aligned) ---
+    struct timespec packStart, packEnd;
+    clock_gettime(CLOCK_MONOTONIC, &packStart);
+
+    // offsets[count] == one past the last separator byte (\n or virtual sentinel)
+    NSUInteger totalBytes = (NSUInteger)offsets[count];
+    id<MTLBuffer> inputBuffer;
+    NSUInteger pageSize = (NSUInteger)getpagesize();
+    if ((uintptr_t)bytes % pageSize == 0) {
+        // mmap-backed: round length up to page boundary (the mapped region is already that large)
+        NSUInteger roundedLen = (totalBytes + pageSize - 1) & ~(pageSize - 1);
+        inputBuffer = [self.device newBufferWithBytesNoCopy:(void *)bytes
+                                                     length:roundedLen
+                                                    options:MTLResourceStorageModeShared
+                                                deallocator:nil];
+    } else {
+        // not page-aligned (heap-backed): fall back to copy
+        inputBuffer = [self.device newBufferWithBytes:bytes
+                                              length:totalBytes
+                                             options:MTLResourceStorageModeShared];
+    }
+
+    id<MTLBuffer> offsetsBuffer = [self.device newBufferWithBytes:offsets
+                                                           length:(count + 1) * sizeof(uint32_t)
+                                                          options:MTLResourceStorageModeShared];
+    id<MTLBuffer> indicesBuffer = [self.device newBufferWithLength:count * sizeof(int32_t)
+                                                           options:MTLResourceStorageModeShared];
+
+    clock_gettime(CLOCK_MONOTONIC, &packEnd);
+    double batchPackMs = (packEnd.tv_sec - packStart.tv_sec) * 1000.0
+                       + (packEnd.tv_nsec - packStart.tv_nsec) / 1e6;
+
+    // --- DISPATCH lookup_kernel_index ---
+    id<MTLCommandBuffer> cmdBuf = [self.commandQueue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+
+    [encoder setComputePipelineState:self.pipelineIndex];
+    [encoder setBuffer:inputBuffer            offset:0 atIndex:0];
+    [encoder setBuffer:self.statesBuffer      offset:0 atIndex:1];
+    [encoder setBuffer:self.transitionsBuffer offset:0 atIndex:2];
+    [encoder setBuffer:indicesBuffer          offset:0 atIndex:3];
+    [encoder setBuffer:offsetsBuffer          offset:0 atIndex:4];
+
+    MTLSize gridSize        = MTLSizeMake(count, 1, 1);
+    MTLSize threadgroupSize = MTLSizeMake(self.pipelineIndex.threadExecutionWidth, 1, 1);
+    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+    [encoder endEncoding];
+
+    [cmdBuf commit];
+    [cmdBuf waitUntilCompleted];
+
+    double kernelGpuMs = (cmdBuf.GPUEndTime - cmdBuf.GPUStartTime) * 1000.0;
+
+    clock_gettime(CLOCK_MONOTONIC, &wallEnd);
+    double wallMs = (wallEnd.tv_sec - wallStart.tv_sec) * 1000.0
+                  + (wallEnd.tv_nsec - wallStart.tv_nsec) / 1e6;
+
+    if (outKernelMs) *outKernelMs = kernelGpuMs;
+    if (outPackMs)   *outPackMs   = batchPackMs;
+    if (outTotalMs)  *outTotalMs  = wallMs;
+
+    // --- Sample: first 100 and last 100 word → lemma pairs ---
+    const int32_t  *indices   = (const int32_t *)indicesBuffer.contents;
+    const char     *lemmaBytes = (const char *)self.lemmasData.bytes;
+    NSUInteger      sampleSize = 100;
+
+    fprintf(stderr, "\n--- First %lu ---\n", (unsigned long)sampleSize);
+    for (NSUInteger j = 0; j < MIN(sampleSize, count); j++) {
+        int wordLen  = (int)(offsets[j + 1] - offsets[j] - 1);  // exclude the \n
+        const char *word  = bytes + offsets[j];
+        const char *lemma = (indices[j] >= 0) ? (lemmaBytes + indices[j]) : word;
+        if (indices[j] >= 0)
+            fprintf(stderr, "  %.*s → %s\n", wordLen, word, lemma);
+        else
+            fprintf(stderr, "  %.*s → (no match)\n", wordLen, word);
+    }
+
+    fprintf(stderr, "\n--- Last %lu ---\n", (unsigned long)sampleSize);
+    NSUInteger start = (count > sampleSize) ? count - sampleSize : 0;
+    for (NSUInteger j = start; j < count; j++) {
+        int wordLen  = (int)(offsets[j + 1] - offsets[j] - 1);  // exclude the \n
+        const char *word  = bytes + offsets[j];
+        const char *lemma = (indices[j] >= 0) ? (lemmaBytes + indices[j]) : word;
+        if (indices[j] >= 0)
+            fprintf(stderr, "  %.*s → %s\n", wordLen, word, lemma);
+        else
+            fprintf(stderr, "  %.*s → (no match)\n", wordLen, word);
+    }
+
+    return count;
+}
+
+// ---------------------------------------------------------------------------
 // Loop benchmarks — no D2H, no result decoding, pure throughput measurement
 // ---------------------------------------------------------------------------
 
