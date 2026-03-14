@@ -11,6 +11,8 @@
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
+        fprintf(stderr, "%d", argc);
+
         if (argc < 2) {
             fprintf(stderr, "Usage: %s [--packed|--packed-col] <input_file.txt>\n", argv[0]);
             return 1;
@@ -23,17 +25,70 @@ int main(int argc, const char * argv[]) {
         struct timespec preprocessStart, preprocessEnd;
         clock_gettime(CLOCK_MONOTONIC, &preprocessStart);
 
-        NSString *path = [NSString stringWithUTF8String:hasFlag ? argv[2] : argv[1]];
+        NSString *inputFileName = [NSString stringWithUTF8String:hasFlag ? argv[2] : argv[1]];
+        NSString *path = nil;
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        
+        // First, try as an absolute or relative path from current directory
+        if ([inputFileName hasPrefix:@"/"]) {
+            path = inputFileName;
+        } else {
+            // Try relative to current working directory
+            NSString *relativePath = [[fileManager currentDirectoryPath] stringByAppendingPathComponent:inputFileName];
+            if ([fileManager fileExistsAtPath:relativePath]) {
+                path = relativePath;
+            } else {
+                // Try to find in bundle resources
+                NSBundle *bundle = [NSBundle mainBundle];
+                NSString *nameWithoutExt = [inputFileName stringByDeletingPathExtension];
+                NSString *ext = [inputFileName pathExtension];
+                
+                if (ext.length > 0) {
+                    path = [bundle pathForResource:nameWithoutExt ofType:ext];
+                } else {
+                    path = [bundle pathForResource:inputFileName ofType:nil];
+                }
+                
+                if (!path) {
+                    // Try relative to executable
+                    NSString *executablePath = [bundle executablePath];
+                    NSString *executableDir = [executablePath stringByDeletingLastPathComponent];
+                    path = [executableDir stringByAppendingPathComponent:inputFileName];
+                }
+            }
+        }
+        
+        fprintf(stderr, "Attempting to read file: %s\n", path ? [path UTF8String] : "(null)");
+        
+        // Check if file exists
+        if (!path || ![fileManager fileExistsAtPath:path]) {
+            fprintf(stderr, "Error: File does not exist at path: %s\n", path ? [path UTF8String] : "(null)");
+            NSString *currentDir = [fileManager currentDirectoryPath];
+            fprintf(stderr, "Current working directory: %s\n", [currentDir UTF8String]);
+            fprintf(stderr, "Searched locations:\n");
+            fprintf(stderr, "  1. Relative to CWD: %s\n", [[[fileManager currentDirectoryPath] stringByAppendingPathComponent:inputFileName] UTF8String]);
+            fprintf(stderr, "  2. Bundle resources\n");
+            NSBundle *bundle = [NSBundle mainBundle];
+            NSString *execPath = [bundle executablePath];
+            NSString *execDir = [execPath stringByDeletingLastPathComponent];
+            fprintf(stderr, "  3. Relative to executable: %s\n", [execDir UTF8String]);
+            return 1;
+        }
+
         NSError *readError = nil;
         NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&readError];
 
         if (readError || !content) {
-            fprintf(stderr, "Failed to read file: %s\n", argv[1]);
+            fprintf(stderr, "Failed to read file: %s\n", [path UTF8String]);
+            if (readError) {
+                fprintf(stderr, "Error: %s\n", [[readError localizedDescription] UTF8String]);
+            }
             return 1;
         }
 
-        NSArray<NSString *> *words = [content componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        words = [words filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+//        NSArray<NSString *> *words = [content componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+//        words = [words filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+        NSArray<NSString *> *words = [content componentsSeparatedByString:@"\n"];
 
         clock_gettime(CLOCK_MONOTONIC, &preprocessEnd);
         double preprocessMs = (preprocessEnd.tv_sec - preprocessStart.tv_sec) * 1000.0
@@ -58,9 +113,9 @@ int main(int argc, const char * argv[]) {
             results = [analyzer lemmatizeBatch:words kernelMs:&kernelMs packMs:&packMs totalMs:&totalMs];
         }
 
-        for (NSUInteger i = 0; i < results.count; i++) {
-            printf("%s → %s\n", [words[i] UTF8String], [results[i] UTF8String]);
-        }
+//        for (NSUInteger i = 0; i < results.count; i++) {
+//            printf("%s → %s\n", [words[i] UTF8String], [results[i] UTF8String]);
+//        }
 
         double throughput = results.count / (kernelMs / 1000.0);
         const char *label = usePackedCol ? "packed-col" : (usePacked ? "packed" : "fixed-stride");

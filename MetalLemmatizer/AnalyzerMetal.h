@@ -20,6 +20,14 @@
                                              packMs:(double *)outPackMs
                                             totalMs:(double *)outTotalMs;
 
+// Zero-NSString raw path — caller owns bytes/offsets; fileData must stay alive during call
+- (NSUInteger)lemmatizeBatchPackedColumnRaw:(const char *)bytes
+                                    offsets:(const uint32_t *)offsets
+                                      count:(NSUInteger)count
+                                   kernelMs:(double *)outKernelMs
+                                     packMs:(double *)outPackMs
+                                    totalMs:(double *)outTotalMs;
+
 // Loop benchmarks — upload once, hammer kernel until `seconds` wall-clock time
 - (void)benchLoopFixedStride:(NSArray<NSString *> *)words duration:(double)seconds;
 - (void)benchLoopPacked:(NSArray<NSString *> *)words duration:(double)seconds;

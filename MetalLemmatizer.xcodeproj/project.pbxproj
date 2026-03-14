@@ -25,11 +25,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 		};
+		19C9643F2F6440D2002B90E0 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		190E6A0F2F62ADFC000029A6 /* MetalLemmatizer */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MetalLemmatizer; sourceTree = BUILT_PRODUCTS_DIR; };
 		190E6A4F2F62E573000029A6 /* MetalLemmatizerLoop */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MetalLemmatizerLoop; sourceTree = BUILT_PRODUCTS_DIR; };
+		190E6A7E2F639234000029A6 /* articles.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = articles.txt; sourceTree = "<group>"; };
+		19C964412F6440D2002B90E0 /* MetalLemmatizerRaw */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MetalLemmatizerRaw; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -49,6 +60,14 @@
 			);
 			target = 190E6A4E2F62E573000029A6 /* MetalLemmatizerLoop */;
 		};
+		19C9644A2F64422C002B90E0 /* Exceptions for "MetalLemmatizer" folder in "MetalLemmatizerRaw" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AnalyzerMetal.m,
+				lookup_kernel.metal,
+			);
+			target = 19C964402F6440D2002B90E0 /* MetalLemmatizerRaw */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -57,6 +76,7 @@
 			exceptions = (
 				190E6A4A2F62E412000029A6 /* Exceptions for "MetalLemmatizer" folder in "MetalLemmatizer" target */,
 				190E6A572F62E58F000029A6 /* Exceptions for "MetalLemmatizer" folder in "MetalLemmatizerLoop" target */,
+				19C9644A2F64422C002B90E0 /* Exceptions for "MetalLemmatizer" folder in "MetalLemmatizerRaw" target */,
 			);
 			path = MetalLemmatizer;
 			sourceTree = "<group>";
@@ -64,6 +84,11 @@
 		190E6A502F62E573000029A6 /* MetalLemmatizerLoop */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = MetalLemmatizerLoop;
+			sourceTree = "<group>";
+		};
+		19C964422F6440D2002B90E0 /* MetalLemmatizerRaw */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MetalLemmatizerRaw;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -83,14 +108,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		19C9643E2F6440D2002B90E0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		190E6A062F62ADFC000029A6 = {
 			isa = PBXGroup;
 			children = (
+				190E6A7E2F639234000029A6 /* articles.txt */,
 				190E6A112F62ADFC000029A6 /* MetalLemmatizer */,
 				190E6A502F62E573000029A6 /* MetalLemmatizerLoop */,
+				19C964422F6440D2002B90E0 /* MetalLemmatizerRaw */,
 				190E6A102F62ADFC000029A6 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -100,6 +134,7 @@
 			children = (
 				190E6A0F2F62ADFC000029A6 /* MetalLemmatizer */,
 				190E6A4F2F62E573000029A6 /* MetalLemmatizerLoop */,
+				19C964412F6440D2002B90E0 /* MetalLemmatizerRaw */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -151,6 +186,28 @@
 			productReference = 190E6A4F2F62E573000029A6 /* MetalLemmatizerLoop */;
 			productType = "com.apple.product-type.tool";
 		};
+		19C964402F6440D2002B90E0 /* MetalLemmatizerRaw */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 19C964472F6440D2002B90E0 /* Build configuration list for PBXNativeTarget "MetalLemmatizerRaw" */;
+			buildPhases = (
+				19C9643D2F6440D2002B90E0 /* Sources */,
+				19C9643E2F6440D2002B90E0 /* Frameworks */,
+				19C9643F2F6440D2002B90E0 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				19C964422F6440D2002B90E0 /* MetalLemmatizerRaw */,
+			);
+			name = MetalLemmatizerRaw;
+			packageProductDependencies = (
+			);
+			productName = MetalLemmatizerRaw;
+			productReference = 19C964412F6440D2002B90E0 /* MetalLemmatizerRaw */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -164,6 +221,9 @@
 						CreatedOnToolsVersion = 26.2;
 					};
 					190E6A4E2F62E573000029A6 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					19C964402F6440D2002B90E0 = {
 						CreatedOnToolsVersion = 26.2;
 					};
 				};
@@ -184,6 +244,7 @@
 			targets = (
 				190E6A0E2F62ADFC000029A6 /* MetalLemmatizer */,
 				190E6A4E2F62E573000029A6 /* MetalLemmatizerLoop */,
+				19C964402F6440D2002B90E0 /* MetalLemmatizerRaw */,
 			);
 		};
 /* End PBXProject section */
@@ -197,6 +258,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		190E6A4B2F62E573000029A6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		19C9643D2F6440D2002B90E0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -353,6 +421,22 @@
 			};
 			name = Release;
 		};
+		19C964452F6440D2002B90E0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		19C964462F6440D2002B90E0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -379,6 +463,15 @@
 			buildConfigurations = (
 				190E6A542F62E573000029A6 /* Debug */,
 				190E6A552F62E573000029A6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		19C964472F6440D2002B90E0 /* Build configuration list for PBXNativeTarget "MetalLemmatizerRaw" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				19C964452F6440D2002B90E0 /* Debug */,
+				19C964462F6440D2002B90E0 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
