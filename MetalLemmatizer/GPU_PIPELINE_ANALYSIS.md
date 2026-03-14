@@ -73,9 +73,10 @@ single most important architectural advantage over CUDA discrete-GPU designs.
 **Alignment note:** `newBufferWithBytesNoCopy:` requires the pointer to be
 page-aligned (typically 16 KB on Apple Silicon). `NSData dataWithContentsOfFile:`
 uses `mmap` internally, which returns page-aligned pointers — so this works
-correctly, but there is no explicit alignment check. If `NSData` were ever
-initialized differently (e.g., via `dataWithBytes:`), it would fail or crash
-silently.
+correctly, but there is no explicit alignment check in the trie-loading code.
+The newer raw path (`lemmatizeBatchPackedColumnRaw:`) addresses this by
+explicitly checking `(uintptr_t)bytes % pageSize == 0` and falling back to
+a copying `newBufferWithBytes:` when alignment is not guaranteed (see §3.0).
 
 ---
 
@@ -102,9 +103,112 @@ that would be avoided by pre-compiling a `.metallib`.
 
 ---
 
-## 3. Three Kernel Variants — Detailed Comparison
+## 3. Four Execution Paths — Detailed Comparison
 
-### 3.1 `lookup_kernel` (Fixed-Stride) — `lookup_kernel.metal:105–159`
+The project now provides four distinct host-side execution paths, all using
+the same three GPU kernel functions but differing in how they prepare input
+and consume output.
+
+| Path | Entry point | Kernel | Input source | Decode |
+|------|-------------|--------|--------------|--------|
+| Fixed-stride | `main.m` | `lookup_kernel` | `NSString[]` → padded buffer | GPU writes full strings |
+| Packed | `main.m --packed` | `lookup_kernel_packed` | `NSString[]` → packed + offsets | GPU writes full strings |
+| Packed-col | `main.m --packed-col` | `lookup_kernel_index` | `NSString[]` → packed + offsets | GPU writes `int32[]`, CPU decodes |
+| **Raw packed-col** | `MetalLemmatizerRaw/main.m` | `lookup_kernel_index` | `mmap` raw bytes → `\n`-scan offsets | GPU writes `int32[]`, no decode |
+
+### 3.0 Raw Packed-Col Path (`MetalLemmatizerRaw/main.m` + `lemmatizeBatchPackedColumnRaw:`)
+
+This is the newest and fastest end-to-end path, eliminating all `NSString`
+overhead from the hot path.
+
+**Input pipeline:**
+
+```
+File on disk
+    │  NSDataReadingMappedIfSafe (read-only mmap, no COW)
+    ▼
+const char *bytes   (file pages mapped directly into address space)
+    │  single-pass \n scan → uint32_t offsets[]
+    ▼
+offsets[0..N]       (byte positions of line starts)
+    │  pass to lemmatizeBatchPackedColumnRaw:
+    ▼
+MTLBuffer (noCopy if page-aligned, else memcpy fallback)
+```
+
+**Key design decisions** (`MetalLemmatizerRaw/main.m:39–102`):
+
+1. **Read-only mmap.** `NSDataReadingMappedIfSafe` maps the file without
+   writing to it — no copy-on-write faults. The file pages are shared with
+   the OS page cache.
+
+2. **Single-pass `\n` scan.** A `for` loop scans every byte once, recording
+   line start positions into a `malloc`'d offsets array. Initial capacity is
+   estimated at `fileLen / 10 + 1024` (avg ~10 bytes/line); `realloc` doubles
+   it on overflow (guarded by `__builtin_expect` for the branch prediction
+   hint).
+
+3. **Newline-inclusive offsets.** Each offset points to the start of a line.
+   The kernel reads `offsets[j+1] - offsets[j] - 1` characters (skipping the
+   trailing `\n`). Empty lines yield `slot_len = 1`, so the kernel does 0
+   iterations → `lemma_offset = -1` (identity fallback for empty input).
+
+4. **Trailing-newline sentinel.** If the file doesn't end with `\n`, a virtual
+   sentinel is added: `offsets[lineCount] = fileLen + 1`. This ensures the
+   last word is correctly bounded.
+
+**Buffer wrapping** (`AnalyzerMetal.m:436–448`):
+
+```objc
+NSUInteger pageSize = (NSUInteger)getpagesize();
+if ((uintptr_t)bytes % pageSize == 0) {
+    NSUInteger roundedLen = (totalBytes + pageSize - 1) & ~(pageSize - 1);
+    inputBuffer = [self.device newBufferWithBytesNoCopy:(void *)bytes
+                                                 length:roundedLen ...];
+} else {
+    inputBuffer = [self.device newBufferWithBytes:bytes length:totalBytes ...];
+}
+```
+
+This is a significant improvement over the original trie-loading code: the raw
+path **explicitly checks page alignment** before attempting `newBufferWithBytesNoCopy`.
+If the mmap'd pointer is page-aligned (which it always is for `mmap`), the file
+data is wrapped as a Metal buffer with **zero copies** — the GPU reads directly
+from the OS page cache. If not page-aligned (heap-allocated fallback), it
+gracefully falls back to `newBufferWithBytes:` which performs a `memcpy`.
+
+The length is rounded up to the next page boundary (`& ~(pageSize - 1)`)
+because `newBufferWithBytesNoCopy:` requires page-aligned length. The mmap'd
+region is already at least this large.
+
+**Synchronous single-batch dispatch** (`AnalyzerMetal.m:461–477`):
+
+Unlike the NSString paths which use async batching with `dispatch_group` and
+`addCompletedHandler`, the raw path dispatches a **single command buffer
+synchronously** via `waitUntilCompleted`. This is simpler and has lower overhead
+for the common case where the entire file fits in one batch.
+
+**No string decode.** The raw path prints sample results (first/last 100 words)
+using `fprintf` with `%.*s` format directly from the mmap'd bytes — no
+`NSString` objects are ever created for the word data. This eliminates the
+decode phase entirely.
+
+**Performance implications:**
+
+- **Zero NSString overhead:** No `componentsSeparatedByString:`, no per-word
+  `NSString` allocation, no `UTF8String` bridging. For 761k words this saves
+  ~761k object allocations plus the `NSArray` overhead.
+- **Zero-copy input to GPU:** `mmap` → page-aligned → `newBufferWithBytesNoCopy`.
+  The file bytes go from disk page cache to GPU with zero intermediate copies.
+- **Minimal CPU preprocessing:** Single sequential scan of the file bytes.
+  This is cache-friendly and runs at memory bandwidth (~10 GB/s on M1).
+- **Trade-off:** No batching — the entire file is dispatched as one GPU
+  command. For very large files (>100M words), this may hit Metal buffer size
+  limits or reduce GPU occupancy versus the pipelined multi-batch approach.
+
+### 3.1 Three Kernel Variants — Detailed Comparison
+
+#### 3.1.1 `lookup_kernel` (Fixed-Stride) — `lookup_kernel.metal:105–159`
 
 **Memory layout:**
 ```
@@ -140,7 +244,7 @@ per input buffer.
 - **Output cost:** Writes full strings (lemma or identity fallback) to the
   output buffer, requiring byte-by-byte copy in the kernel.
 
-### 3.2 `lookup_kernel_packed` — `lookup_kernel.metal:17–65`
+#### 3.1.2 `lookup_kernel_packed` — `lookup_kernel.metal:17–65`
 
 **Memory layout:**
 ```
@@ -171,7 +275,7 @@ then `memcpy`'d contiguously into the input buffer — no padding, no zeroing.
 - **Full string output:** Same byte-copy output as fixed-stride, but at
   irregular offsets.
 
-### 3.3 `lookup_kernel_index` — `lookup_kernel.metal:67–103`
+#### 3.1.3 `lookup_kernel_index` — `lookup_kernel.metal:67–103`
 
 **Memory layout:**
 ```
@@ -206,7 +310,7 @@ const char *src = (indices[j] >= 0)
   CPU where it is more natural. On unified memory, the CPU reads the lemma
   buffer at full DRAM bandwidth with no transfer overhead.
 
-### 3.4 Kernel Output Bandwidth Comparison
+#### 3.1.4 Kernel Output Bandwidth Comparison
 
 | Kernel | Output per thread | Write pattern | Relative cost |
 |--------|------------------|---------------|---------------|
@@ -392,7 +496,7 @@ overhead and reduce memory fragmentation.
 
 ## 6. Loop Benchmark Path
 
-The `benchLoop*` methods (`AnalyzerMetal.m:424–648`) pack data **once**, then
+The `benchLoop*` methods (`AnalyzerMetal.m:536–760`) pack data **once**, then
 run the kernel in a tight synchronous loop:
 
 ```objc
@@ -428,6 +532,9 @@ isolating it from CPU packing, buffer allocation, and string decode costs.
 | Hardware GPU timestamps | `GPUEndTime - GPUStartTime` gives accurate kernel-only timing |
 | Async batch pipelining | Semaphore-bounded overlap of pack/encode/execute across batches |
 | Sorted transitions in data | `build_trie.py` sorts by character, ready for binary search |
+| Raw zero-NSString path | `MetalLemmatizerRaw` eliminates all ObjC object overhead from hot path |
+| Explicit page-alignment check | Raw path checks alignment before `newBufferWithBytesNoCopy`, falls back gracefully |
+| True zero-copy input pipeline | `mmap` → page-aligned `newBufferWithBytesNoCopy` — file pages go directly to GPU |
 
 ### Findings
 
@@ -437,12 +544,14 @@ isolating it from CPU packing, buffer allocation, and string decode costs.
 | 2 | `build_trie.py` outputs single `trie.bin`; ObjC expects 3 separate `.bin` files | Bug | `build_trie.py:80` vs `AnalyzerMetal.m:48–50` |
 | 3 | Fixed-stride layout wastes ~78% memory bandwidth on padding | Medium | `lookup_kernel` + `lemmatizeBatch:` |
 | 4 | Per-element `@synchronized` in fixed-stride/packed decode | Low | `AnalyzerMetal.m:144–146`, `254–256` |
-| 5 | No page-alignment check on `newBufferWithBytesNoCopy` pointers | Low | `AnalyzerMetal.m:52–54` |
+| 5 | No page-alignment check on `newBufferWithBytesNoCopy` for trie buffers (fixed in raw path) | Low | `AnalyzerMetal.m:52–54` |
 | 6 | Per-batch `MTLBuffer` allocation (no buffer pool reuse) | Low | `AnalyzerMetal.m:100–102`, `210–212`, `320–322` |
 | 7 | Pointer-chasing trie traversal limits GPU pipeline utilization | Inherent | All kernels |
 | 8 | SIMD divergence from variable word lengths and early-break | Inherent | All kernels |
 | 9 | Summed GPU times across overlapping batches can exceed wall time | Informational | `AnalyzerMetal.m:136–139` |
 | 10 | Runtime Metal compilation adds startup latency (~100–300 ms) | Low | `AnalyzerMetal.m:30–34` |
+| 11 | Raw path dispatches all words in a single command buffer (no batching) | Medium | `AnalyzerMetal.m:461–477` |
+| 12 | `main.m` tokenizes input with `componentsSeparatedByString:@"\n"` — may include empty strings for blank lines | Low | `main.m:91` |
 
 ### Optimization Opportunities
 
@@ -466,17 +575,40 @@ isolating it from CPU packing, buffer allocation, and string decode costs.
 
 ## 8. Architecture Verdict
 
-The `--packed-col` path (`lookup_kernel_index` + CPU-side decode) is the
-architecturally superior design:
+The **raw packed-col** path (`MetalLemmatizerRaw` + `lemmatizeBatchPackedColumnRaw:`)
+represents the optimal end-to-end architecture:
 
+- **Zero-copy from disk to GPU.** `mmap` + page-aligned `newBufferWithBytesNoCopy`
+  means the file's page cache entries are directly readable by the GPU — no
+  `memcpy`, no `NSString` bridging, no intermediate buffers.
+- **Minimal CPU preprocessing.** A single sequential `\n`-scan over the file
+  bytes to build offsets. O(N) with excellent cache behavior.
 - **Minimal GPU output bandwidth** (4 B/thread vs up to 37 B/thread).
 - **Perfectly coalesced writes** (contiguous `int32[]`).
-- **Leverages unified memory** for the decode pass — CPU reads the lemma buffer
-  directly without any transfer.
+- **No decode overhead.** Results are consumed directly from shared buffers
+  using `fprintf` with `%.*s` — no `NSString` objects ever created.
 - **Clean separation of concerns** — GPU does the trie traversal (its strength),
-  CPU does variable-length string assembly (its strength).
+  CPU does the trivial offset arithmetic.
 
-The main remaining bottleneck across all kernel variants is the inherent
-pointer-chasing nature of trie traversal, which limits instruction-level
-parallelism within each thread. This is a fundamental property of the data
-structure and not something that can be resolved at the kernel level alone.
+The NSString-based `--packed-col` path remains the best choice when the caller
+needs `NSArray<NSString *>` output (e.g., for integration with higher-level
+ObjC/Swift code). It shares the same `lookup_kernel_index` kernel but adds
+`NSString` allocation overhead during decode.
+
+The main remaining bottleneck across all paths is the inherent pointer-chasing
+nature of trie traversal, which limits instruction-level parallelism within
+each thread. This is a fundamental property of the data structure and not
+something that can be resolved at the kernel level alone.
+
+### Evolution of the Pipeline
+
+```
+v1  NSString[] → padded buffer → GPU writes strings → NSString[] decode
+v2  NSString[] → packed buffer → GPU writes int32[] → NSString[] decode
+v3  mmap bytes → \n-scan offsets → GPU writes int32[] → fprintf from raw bytes
+     ↑ zero NSString    ↑ zero copy to GPU    ↑ zero decode overhead
+```
+
+Each iteration eliminated a major source of CPU overhead, converging on a
+design where the CPU does essentially nothing but scan for newlines and
+dispatch the kernel.
